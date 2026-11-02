@@ -37,6 +37,7 @@ import reactor.core.publisher.Mono;
 
 import javax.net.ssl.HttpsURLConnection;
 import java.io.DataOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
@@ -49,6 +50,7 @@ import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
 import java.time.OffsetDateTime;
@@ -63,6 +65,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+
+import static com.azure.identity.implementation.util.ValidationUtil.validateSecretFile;
 
 /**
  * The identity client that contains APIs to retrieve access tokens
@@ -807,8 +811,10 @@ public class IdentityClient extends IdentityClientBase {
                         null));
                 }
 
-                String secretKeyPath = realm.substring(separatorIndex + 1);
-                secretKey = new String(Files.readAllBytes(Paths.get(secretKeyPath)), StandardCharsets.UTF_8);
+                String secretKeyPathHeaderValue = realm.substring(separatorIndex + 1);
+                Path secretKeyPath = validateSecretFile(new File(secretKeyPathHeaderValue), LOGGER);
+
+                secretKey = new String(Files.readAllBytes(secretKeyPath), StandardCharsets.UTF_8);
 
             } finally {
                 if (connection != null) {

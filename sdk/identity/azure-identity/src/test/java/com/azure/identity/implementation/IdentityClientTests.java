@@ -26,6 +26,9 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
 import java.time.OffsetDateTime;
@@ -266,6 +269,50 @@ public class IdentityClientTests {
         mockForArcCodeFlow(200, () -> {
             client.getTokenFromTargetManagedIdentity(request).block();
         });
+    }
+
+    @Test
+    public void testArcCodeFlowRejectsSecretFileOutsideTokensDirectory() throws Exception {
+        // setup - the Arc endpoint's 401 challenge points the realm at an arbitrary local file
+        Path arbitraryFile = Files.createTempFile("arc-secret", ".key");
+        String arbitraryFileContent = "contents-of-an-arbitrary-local-file";
+        Files.write(arbitraryFile, arbitraryFileContent.getBytes(StandardCharsets.UTF_8));
+        try {
+            String endpoint = "http://localhost";
+            TokenRequestContext request = new TokenRequestContext().addScopes("https://management.azure.com");
+            IdentityClientOptions options = new IdentityClientOptions()
+                .setManagedIdentityType(ManagedIdentityType.ARC)
+                .setManagedIdentityParameters(new ManagedIdentityParameters()
+                    .setIdentityEndpoint(endpoint));
+            IdentityClient client = new IdentityClientBuilder().identityClientOptions(options).build();
+
+            // mock
+            try (MockedStatic<IdentityClient> identityClientMockedStatic = mockStatic(IdentityClient.class)) {
+                URL url = mock(URL.class);
+                HttpURLConnection challengeConnection = mock(HttpURLConnection.class);
+                doThrow(new IOException("Unauthorized")).when(challengeConnection).connect();
+                when(challengeConnection.getResponseCode()).thenReturn(401);
+                when(challengeConnection.getHeaderField("WWW-Authenticate"))
+                    .thenReturn("Basic realm=" + arbitraryFile.toAbsolutePath());
+                HttpURLConnection tokenConnection = mock(HttpURLConnection.class);
+                when(tokenConnection.getInputStream()).thenReturn(new ByteArrayInputStream(
+                    "{ \"access_token\" : \"token1\", \"expires_on\" : \"1700000000\" }"
+                        .getBytes(StandardCharsets.UTF_8)));
+                when(url.openConnection()).thenReturn(challengeConnection, tokenConnection);
+                identityClientMockedStatic.when(() -> IdentityClient.getUrl(anyString())).thenReturn(url);
+
+                // test
+                StepVerifier.create(client.getTokenFromTargetManagedIdentity(request))
+                    .expectError(ClientAuthenticationException.class)
+                    .verify();
+
+                // the arbitrary file's contents must never be sent back to the endpoint
+                verify(tokenConnection, never()).setRequestProperty(eq("Authorization"), anyString());
+                verify(url, times(1)).openConnection();
+            }
+        } finally {
+            Files.deleteIfExists(arbitraryFile);
+        }
     }
 
     @Test

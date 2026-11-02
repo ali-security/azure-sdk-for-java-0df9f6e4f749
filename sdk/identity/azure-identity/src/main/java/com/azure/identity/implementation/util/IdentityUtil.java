@@ -83,4 +83,12 @@ public final class IdentityUtil {
             return Collections.emptyList();
         }
     }
+
+    public static boolean isWindowsPlatform() {
+        return System.getProperty("os.name").contains("Windows");
+    }
+
+    public static boolean isLinuxPlatform() {
+        return System.getProperty("os.name").contains("Linux");
+    }
 }
