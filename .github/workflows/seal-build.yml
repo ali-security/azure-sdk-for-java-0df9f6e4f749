@@ -1,0 +1,91 @@
+name: Seal build azure-identity
+
+# Upstream builds and tests azure-sdk-for-java on Azure DevOps
+# (sdk/identity/ci.yml -> eng/pipelines/templates/stages/archetype-sdk-client.yml);
+# this workflow mirrors that pipeline's platform-matrix.json on GitHub Actions:
+# release jar built on JDK 17, unit tests on ubuntu (8/11/17), windows (8/17), macos (8/17).
+
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: 'Surefire -Dtest selector; empty runs the full suite'
+        required: false
+        default: ''
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }} / JDK ${{ matrix.java }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, java: '17', release: true }
+          - { os: ubuntu-latest, java: '8', release: false }
+          - { os: ubuntu-latest, java: '11', release: false }
+          - { os: windows-latest, java: '8', release: false }
+          - { os: windows-latest, java: '17', release: false }
+          - { os: macos-latest, java: '8', release: false }
+          - { os: macos-latest, java: '17', release: false }
+    env:
+      AZURE_TEST_MODE: PLAYBACK
+      AZURE_TEST_HTTP_CLIENTS: netty
+      MAVEN_OPTS: -Xmx3g
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Sparse checkout: the full monorepo has generated paths longer than
+      # Windows' MAX_PATH, which breaks checkout on windows-latest. The module
+      # build needs only these directories (parents resolved via relativePath).
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            sdk/identity/azure-identity
+            sdk/parents
+            eng
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: ${{ matrix.java }}
+
+      - name: Build and test azure-identity
+        run: |
+          GATES="-Dcheckstyle.skip -Dspotbugs.skip -Drevapi.skip -Djacoco.skip -Dcodesnippet.skip -Dspotless.skip -Denforcer.skip -Dmaven.javadoc.skip -Dmaven.source.skip -Dgpg.skip"
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            mvn --batch-mode --no-transfer-progress --settings eng/settings.xml -f sdk/identity/azure-identity/pom.xml \
+              $GATES -Dtest='${{ inputs.test-filter }}' -Dsurefire.failIfNoSpecifiedTests=false clean package
+          else
+            mvn --batch-mode --no-transfer-progress --settings eng/settings.xml -f sdk/identity/azure-identity/pom.xml \
+              $GATES clean package
+          fi
+
+      - name: Report test results
+        if: always()
+        run: |
+          python3 - <<'EOF'
+          import glob, xml.etree.ElementTree as ET
+          tot = fail = err = skip = 0
+          for f in sorted(glob.glob('sdk/identity/azure-identity/target/surefire-reports/TEST-*.xml')):
+              r = ET.parse(f).getroot()
+              t, fl, e, s = (int(r.get(k, 0)) for k in ('tests', 'failures', 'errors', 'skipped'))
+              tot += t; fail += fl; err += e; skip += s
+              print(f"{r.get('name')}: tests={t} failures={fl} errors={e} skipped={s}")
+              for tc in r.iter('testcase'):
+                  sk = tc.find('skipped')
+                  if sk is not None:
+                      msg = (sk.get('message') or (sk.text or '')).strip().splitlines()
+                      print(f"  SKIPPED {tc.get('classname')}.{tc.get('name')}: {msg[0] if msg else 'no message'}")
+          print(f"TOTAL tests={tot} passed={tot - fail - err - skip} failures={fail} errors={err} skipped={skip}")
+          EOF
+
+      - name: Upload release jar
+        if: matrix.release
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-identity-jar
+          path: sdk/identity/azure-identity/target/azure-identity-1.8.3.jar
+          if-no-files-found: error
